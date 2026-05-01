@@ -53,14 +53,14 @@ PAIRS = [
 
 TIMEFRAME = "1m"
 LIMIT = 150
-SIGNAL_COOLDOWN = 90
+SIGNAL_COOLDOWN = 0
 MAX_THREADS = 30
 
 # AI WEIGHTED REAL MODE SETTINGS
 ALWAYS_SIGNAL_MODE = True       # True = real market data থেকে best pair বাছাই করে signal দিবে
 MIN_AI_SCORE = 45               # score এর নিচে হলে still best signal দিবে, কিন্তু Low confidence দেখাবে
 SCAN_INTERVAL = 60              # প্রতি 60 sec scan
-FORCE_BEST_SIGNAL_EVERY = 180   # 3 মিনিটেও signal না হলে best real signal পাঠাবে
+FORCE_BEST_SIGNAL_EVERY = 60   # 3 মিনিটেও signal না হলে best real signal পাঠাবে
 AVOID_SAME_DIRECTION = False    # always mode এ same direction block করা হবে না
 
 executor = concurrent.futures.ThreadPoolExecutor(
@@ -781,7 +781,7 @@ async def main():
                     forced_ok = current_time - last_any_signal_time >= FORCE_BEST_SIGNAL_EVERY
                     direction_ok = True if not AVOID_SAME_DIRECTION else result["signal"] != last_direction
 
-                    if (cooldown_ok and direction_ok) or forced_ok:
+                    if True:
                         signal_id = save_signal(
                             pair,
                             result['signal'],
