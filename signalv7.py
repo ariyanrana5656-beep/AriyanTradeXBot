@@ -67,6 +67,11 @@ executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=MAX_THREADS
 )
 
+LAST_VALID_SIGNAL = None
+LAST_VALID_SIGNAL_TIME = 0
+CACHE_MAX_AGE = 300
+
+
 # ======================================
 # DATABASE
 # ======================================
@@ -149,35 +154,49 @@ async def safe_send_message(text):
 # ======================================
 
 def get_market_data(symbol):
-    try:
-        url = (
-            "https://api.binance.com/api/v3/klines"
-            f"?symbol={symbol}"
-            f"&interval={TIMEFRAME}"
-            f"&limit={LIMIT}"
-        )
+    for retry in range(3):
+        try:
+            url = (
+                "https://api.binance.com/api/v3/klines"
+                f"?symbol={symbol}"
+                f"&interval={TIMEFRAME}"
+                f"&limit={LIMIT}"
+            )
 
-        response = requests.get(url, timeout=20)
-        data = response.json()
+            response = requests.get(url, timeout=20)
 
-        closes = []
-        highs = []
-        lows = []
-        opens = []
-        volumes = []
+            if response.status_code != 200:
+                print(f"Binance HTTP Error {response.status_code} for {symbol}: {response.text[:120]}")
+                time.sleep(2)
+                continue
 
-        for candle in data:
-            opens.append(float(candle[1]))
-            highs.append(float(candle[2]))
-            lows.append(float(candle[3]))
-            closes.append(float(candle[4]))
-            volumes.append(float(candle[5]))
+            data = response.json()
 
-        return opens, highs, lows, closes, volumes
+            if not isinstance(data, list) or len(data) < 50:
+                print(f"Invalid Binance data for {symbol}: {str(data)[:120]}")
+                time.sleep(2)
+                continue
 
-    except Exception as e:
-        print(f"Market Data Error: {e}")
-        return [], [], [], [], []
+            closes = []
+            highs = []
+            lows = []
+            opens = []
+            volumes = []
+
+            for candle in data:
+                opens.append(float(candle[1]))
+                highs.append(float(candle[2]))
+                lows.append(float(candle[3]))
+                closes.append(float(candle[4]))
+                volumes.append(float(candle[5]))
+
+            return opens, highs, lows, closes, volumes
+
+        except Exception as e:
+            print(f"Market Data Error {symbol} retry {retry + 1}/3: {e}")
+            time.sleep(2)
+
+    return [], [], [], [], []
 
 # ======================================
 # INDICATORS
@@ -412,6 +431,8 @@ def analyze_pair(pair):
     return ai_weighted_score(pair)
 
 def get_best_real_signal():
+    global LAST_VALID_SIGNAL, LAST_VALID_SIGNAL_TIME
+
     results = []
 
     for pair in PAIRS:
@@ -424,18 +445,28 @@ def get_best_real_signal():
                 f"TREND:{data['trend_percent']}%"
             )
         else:
-            print(f"No market data: {pair}")
+            print(f"No valid market data: {pair}")
 
-    if not results:
-        return None
+    if results:
+        results.sort(
+            key=lambda x: (x["confidence"], abs(x["buy_score"] - x["sell_score"])),
+            reverse=True
+        )
+        LAST_VALID_SIGNAL = results[0]
+        LAST_VALID_SIGNAL_TIME = time.time()
+        return results[0]
 
-    # best confidence + stronger score gap
-    results.sort(
-        key=lambda x: (x["confidence"], abs(x["buy_score"] - x["sell_score"])),
-        reverse=True
-    )
+    # No fake/random fallback. Only reuse last real signal if still fresh.
+    if LAST_VALID_SIGNAL and (time.time() - LAST_VALID_SIGNAL_TIME <= CACHE_MAX_AGE):
+        cached = LAST_VALID_SIGNAL.copy()
+        cached["confidence"] = max(45, int(cached.get("confidence", 50)) - 5)
+        cached["quality"] = "CACHED_REAL"
+        cached["reasons"] = cached.get("reasons", []) + ["Using recent cached real market data"]
+        print("Using cached real signal because Binance data failed.")
+        return cached
 
-    return results[0]
+    print("No real signal available and no fresh cache. Signal skipped to avoid fake/random signal.")
+    return None
 
 # ======================================
 # MARTINGALE
@@ -771,7 +802,7 @@ async def main():
                 result = get_best_real_signal()
 
                 if result is None:
-                    print("No real market data found.")
+                    print("Signal skipped: Binance data unavailable and no cached real signal found.")
                 else:
                     pair = result["pair"]
                     last_time = last_signal_time.get(pair, 0)
