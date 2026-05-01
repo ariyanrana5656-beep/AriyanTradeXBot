@@ -5,57 +5,51 @@ import sqlite3
 import time
 import threading
 import concurrent.futures
+from flask import Flask
 
 from datetime import datetime, timedelta
 
-from telegram import Bot
-from telegram.error import NetworkError
-from telegram.request import HTTPXRequest
-from flask import Flask
 
 # ======================================
 # TELEGRAM SETTINGS
 # ======================================
 
-# Set these in Render > Environment. Do not hardcode your private token in GitHub.
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("CHAT_ID", "").strip()
-
 FOOTER = "\n\n🤖Developed by @Devilback12"
 
-request = HTTPXRequest(
-    connect_timeout=60,
-    read_timeout=60,
-    write_timeout=60,
-    pool_timeout=60
-)
-
-try:
-    bot = Bot(token=BOT_TOKEN, request=request) if BOT_TOKEN else None
-except Exception as e:
-    print(f"Telegram bot init error: {e}", flush=True)
-    bot = None
-
-def with_footer(text):
-    text = str(text).rstrip()
-    if "🤖Developed by @Devilback12" in text:
-        return text
-    return text + FOOTER
-
-# ======================================
-# RENDER WEB SERVICE KEEP-ALIVE SERVER
-# ======================================
-
 app = Flask(__name__)
-bot_started = False
 
 @app.route("/")
 def home():
-    return "Advanced Quotex Signal Bot is running ✅"
+    return "Bot is running ✅"
 
-@app.route("/health")
-def health():
-    return "OK", 200
+def add_footer(text):
+    return text.rstrip() + FOOTER
+
+def telegram_send_message(text, reply_to_message_id=None):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Missing BOT_TOKEN or CHAT_ID environment variable")
+        return None
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": add_footer(text)
+    }
+
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+
+    response = requests.post(url, json=payload, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+
+    if data.get("ok"):
+        return data.get("result")
+
+    print(f"Telegram API Error: {data}")
+    return None
 
 # ======================================
 # SETTINGS
@@ -127,29 +121,15 @@ conn.commit()
 
 async def safe_send_message(text):
 
-    if not bot or not CHAT_ID:
-        print("Missing BOT_TOKEN or CHAT_ID. Set them in Render Environment.")
-        return None
-
-    text = with_footer(text)
-
     retries = 5
 
     for attempt in range(retries):
 
         try:
 
-            sent = await bot.send_message(
-                chat_id=CHAT_ID,
-                text=text
-            )
+            sent = telegram_send_message(text)
 
             return sent
-
-        except NetworkError as e:
-
-            print(f"Telegram Network Error: {e}")
-            await asyncio.sleep(5)
 
         except Exception as e:
 
@@ -767,21 +747,10 @@ def check_signal_result(
 
 """
 
-        async def send_result():
-
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=with_footer(result_message),
-                reply_to_message_id=message_id
-            )
-
-        loop = asyncio.new_event_loop()
-
-        asyncio.set_event_loop(loop)
-
-        loop.run_until_complete(send_result())
-
-        loop.close()
+        telegram_send_message(
+            result_message,
+            reply_to_message_id=message_id
+        )
 
         print(f"Result Sent: {signal_id}")
 
@@ -856,7 +825,7 @@ async def send_signal(data, signal_id):
 
     update_message_id(
         signal_id,
-        sent_message.message_id
+        sent_message.get("message_id")
     )
 
     executor.submit(
@@ -865,7 +834,7 @@ async def send_signal(data, signal_id):
         data['pair'],
         data['signal'],
         data['price'],
-        sent_message.message_id
+        sent_message.get("message_id")
     )
 
 # ======================================
@@ -971,39 +940,16 @@ async def main():
         await asyncio.sleep(60)
 
 # ======================================
-# START BOT + WEB SERVER FOR RENDER WEB SERVICE
+# START BOT
 # ======================================
 
-def start_bot_once():
-
-    global bot_started
-
-    if bot_started:
-        return
-
-    bot_started = True
-
-    def runner():
-        try:
-            asyncio.run(main())
-        except Exception as e:
-            print(f"Bot Runner Error: {e}")
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
+def start_bot_background():
+    bot_thread = threading.Thread(target=lambda: asyncio.run(main()), daemon=True)
+    bot_thread.start()
 
 
 if __name__ == "__main__":
 
-    print("Starting web service...", flush=True)
-    start_bot_once()
-
+    start_bot_background()
     port = int(os.getenv("PORT", "10000"))
-    print(f"Binding Flask to 0.0.0.0:{port}", flush=True)
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False
-    )
+    app.run(host="0.0.0.0", port=port)
