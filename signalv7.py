@@ -30,10 +30,11 @@ request = HTTPXRequest(
     pool_timeout=60
 )
 
-bot = Bot(
-    token=BOT_TOKEN,
-    request=request
-) if BOT_TOKEN else None
+try:
+    bot = Bot(token=BOT_TOKEN, request=request) if BOT_TOKEN else None
+except Exception as e:
+    print(f"Telegram bot init error: {e}", flush=True)
+    bot = None
 
 def with_footer(text):
     text = str(text).rstrip()
@@ -994,9 +995,11 @@ def start_bot_once():
 
 if __name__ == "__main__":
 
+    print("Starting web service...", flush=True)
     start_bot_once()
 
     port = int(os.getenv("PORT", "10000"))
+    print(f"Binding Flask to 0.0.0.0:{port}", flush=True)
 
     app.run(
         host="0.0.0.0",
